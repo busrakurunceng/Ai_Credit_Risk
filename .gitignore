@@ -7,4 +7,5 @@ venv/
 .cursor/
 data/
 docs/
-notebooks/plots/
+notebooks/*
+!notebooks/*.ipynb
