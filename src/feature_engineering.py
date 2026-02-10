@@ -351,3 +351,120 @@ def aggregate_previous_application(prev: pd.DataFrame) -> pd.DataFrame:
     print(f"  Previous application aggregation: {n_features} features for {len(prev_agg):,} clients")
 
     return prev_agg
+
+
+# ====================================================================
+# STEP 5 — Installments payments aggregations
+# ====================================================================
+
+def aggregate_installments(inst: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate the installments_payments table to one row per SK_ID_CURR.
+
+    Why this is the most valuable table:
+        Bureau tells us *what credits* a client has.  Previous application
+        tells us *what they applied for*.  But installments_payments tells
+        us **how they actually paid** — the ground truth of behavior.
+
+        Each row is a single scheduled payment vs. actual payment.  By
+        comparing the two we derive DPD (Days Past Due) and payment
+        shortfall, the two strongest behavioral signals for default.
+
+    Derived columns (computed before aggregation):
+        - DPD: DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT
+               Positive = paid late (past due), negative = paid early.
+        - PAYMENT_DIFF: AMT_PAYMENT - AMT_INSTALMENT
+               Positive = overpaid, negative = underpaid.
+        - IS_LATE: binary, 1 if DPD > 0
+        - IS_UNDERPAID: binary, 1 if PAYMENT_DIFF < 0
+
+    Aggregated features (all prefixed INST_):
+        Payment behavior:
+            - DPD_MEAN             : average days past due across all payments
+            - DPD_MAX              : worst single late payment
+            - DPD_SUM              : total accumulated late days
+            - LATE_COUNT           : how many payments were late
+            - LATE_RATIO           : proportion of late payments
+        Payment accuracy:
+            - PAYMENT_DIFF_MEAN    : avg over/under-payment amount
+            - PAYMENT_DIFF_MIN     : worst single underpayment
+            - UNDERPAID_COUNT      : how many payments were less than required
+            - UNDERPAID_RATIO      : proportion of underpaid installments
+        Volume:
+            - PAYMENT_COUNT        : total number of installment records
+            - AMT_PAYMENT_MEAN     : average payment amount
+            - AMT_PAYMENT_SUM      : total amount paid
+            - AMT_INSTALMENT_SUM   : total amount that was due
+            - PAYMENT_FULFILLMENT  : total paid / total due ratio
+
+    Parameters
+    ----------
+    inst : pd.DataFrame
+        Raw installments_payments table.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per SK_ID_CURR with aggregated features.
+    """
+    inst = inst.copy()
+
+    # -- Derive row-level signals before aggregation ---------------------------
+    # DPD: how many days late (positive = late, negative = early)
+    inst["DPD"] = inst["DAYS_ENTRY_PAYMENT"] - inst["DAYS_INSTALMENT"]
+    inst["DPD"] = inst["DPD"].clip(lower=0)  # only care about lateness, not earliness
+
+    # Payment difference: actual - expected (negative = underpaid)
+    inst["PAYMENT_DIFF"] = inst["AMT_PAYMENT"] - inst["AMT_INSTALMENT"]
+
+    # Binary flags
+    inst["IS_LATE"] = (inst["DPD"] > 0).astype(np.int8)
+    inst["IS_UNDERPAID"] = (inst["PAYMENT_DIFF"] < -1).astype(np.int8)  # 1 TL tolerance
+
+    # -- GroupBy aggregation ---------------------------------------------------
+    agg_spec = {
+        "SK_ID_PREV":      ["count"],                         # total payments
+        "DPD":             ["mean", "max", "sum"],             # lateness
+        "IS_LATE":         ["sum", "mean"],                    # late count & ratio
+        "PAYMENT_DIFF":    ["mean", "min"],                    # under/over payment
+        "IS_UNDERPAID":    ["sum", "mean"],                    # underpaid count & ratio
+        "AMT_PAYMENT":     ["mean", "sum"],                    # payment amounts
+        "AMT_INSTALMENT":  ["sum"],                            # total due
+    }
+
+    inst_agg = inst.groupby("SK_ID_CURR").agg(agg_spec)
+
+    # Flatten column names
+    inst_agg.columns = [
+        f"INST_{col}_{stat}".upper()
+        for col, stat in inst_agg.columns
+    ]
+    inst_agg = inst_agg.reset_index()
+
+    # Rename for readability
+    inst_agg = inst_agg.rename(columns={
+        "INST_SK_ID_PREV_COUNT":      "INST_PAYMENT_COUNT",
+        "INST_DPD_MEAN":              "INST_DPD_MEAN",
+        "INST_DPD_MAX":               "INST_DPD_MAX",
+        "INST_DPD_SUM":               "INST_DPD_SUM",
+        "INST_IS_LATE_SUM":           "INST_LATE_COUNT",
+        "INST_IS_LATE_MEAN":          "INST_LATE_RATIO",
+        "INST_PAYMENT_DIFF_MEAN":     "INST_PAYMENT_DIFF_MEAN",
+        "INST_PAYMENT_DIFF_MIN":      "INST_PAYMENT_DIFF_MIN",
+        "INST_IS_UNDERPAID_SUM":      "INST_UNDERPAID_COUNT",
+        "INST_IS_UNDERPAID_MEAN":     "INST_UNDERPAID_RATIO",
+        "INST_AMT_PAYMENT_MEAN":      "INST_AMT_PAYMENT_MEAN",
+        "INST_AMT_PAYMENT_SUM":       "INST_AMT_PAYMENT_SUM",
+        "INST_AMT_INSTALMENT_SUM":    "INST_AMT_INSTALMENT_SUM",
+    })
+
+    # -- Derived ratio: total paid / total due ---------------------------------
+    inst_agg["INST_PAYMENT_FULFILLMENT"] = (
+        inst_agg["INST_AMT_PAYMENT_SUM"]
+        / inst_agg["INST_AMT_INSTALMENT_SUM"].clip(lower=1)
+    )
+
+    n_features = len(inst_agg.columns) - 1
+    print(f"  Installments aggregation: {n_features} features for {len(inst_agg):,} clients")
+
+    return inst_agg
