@@ -468,3 +468,212 @@ def aggregate_installments(inst: pd.DataFrame) -> pd.DataFrame:
     print(f"  Installments aggregation: {n_features} features for {len(inst_agg):,} clients")
 
     return inst_agg
+
+
+# ====================================================================
+# STEP 6 — Credit card balance aggregations
+# ====================================================================
+
+def aggregate_credit_card(cc: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate the credit_card_balance table to one row per SK_ID_CURR.
+
+    Why this matters:
+        Credit card behavior reveals spending discipline.  A client who
+        consistently maxes out their credit limit or carries a high
+        balance-to-limit ratio is under financial stress — even if their
+        loan application looks fine on paper.
+
+    Derived columns (computed before aggregation):
+        - UTILIZATION: AMT_BALANCE / AMT_CREDIT_LIMIT_ACTUAL
+          How much of the available limit is used (0-1+).
+          >1 means over-limit.
+
+    Aggregated features (all prefixed CC_):
+        Usage patterns:
+            - UTILIZATION_MEAN     : average utilization across all months
+            - UTILIZATION_MAX      : peak utilization (worst month)
+            - BALANCE_MEAN         : average outstanding balance
+            - BALANCE_MAX          : highest balance ever carried
+            - CREDIT_LIMIT_MEAN    : average credit limit
+        Payment behavior:
+            - AMT_PAYMENT_MEAN     : average monthly payment
+            - MIN_PAYMENT_MEAN     : average minimum required payment
+            - PAYMENT_MIN_DIFF     : avg(actual payment - minimum required)
+        Delinquency:
+            - SK_DPD_MAX           : worst days past due
+            - SK_DPD_MEAN          : average days past due
+            - SK_DPD_DEF_MAX       : worst DPD with tolerance (Home Credit's stricter measure)
+            - HAS_DPD              : binary flag — any DPD > 0?
+        Volume:
+            - MONTH_COUNT          : total monthly records
+            - DRAWINGS_MEAN        : average number of drawings (card usage frequency)
+
+    Parameters
+    ----------
+    cc : pd.DataFrame
+        Raw credit_card_balance table.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per SK_ID_CURR with aggregated features.
+    """
+    cc = cc.copy()
+
+    # -- Derive utilization ratio before aggregation ---------------------------
+    cc["UTILIZATION"] = cc["AMT_BALANCE"] / cc["AMT_CREDIT_LIMIT_ACTUAL"].clip(lower=1)
+
+    # -- GroupBy aggregation ---------------------------------------------------
+    agg_spec = {
+        "MONTHS_BALANCE":           ["count"],                    # total records
+        "UTILIZATION":              ["mean", "max"],              # credit usage
+        "AMT_BALANCE":              ["mean", "max"],              # balances
+        "AMT_CREDIT_LIMIT_ACTUAL":  ["mean"],                    # limit
+        "AMT_PAYMENT_CURRENT":      ["mean"],                    # payments
+        "AMT_INST_MIN_REGULARITY":  ["mean"],                    # minimum payment due
+        "CNT_DRAWINGS_CURRENT":     ["mean"],                    # card usage frequency
+        "SK_DPD":                   ["max", "mean"],             # delinquency
+        "SK_DPD_DEF":               ["max"],                     # strict delinquency
+    }
+
+    cc_agg = cc.groupby("SK_ID_CURR").agg(agg_spec)
+
+    # Flatten column names
+    cc_agg.columns = [
+        f"CC_{col}_{stat}".upper()
+        for col, stat in cc_agg.columns
+    ]
+    cc_agg = cc_agg.reset_index()
+
+    # Rename for readability
+    cc_agg = cc_agg.rename(columns={
+        "CC_MONTHS_BALANCE_COUNT":          "CC_MONTH_COUNT",
+        "CC_UTILIZATION_MEAN":              "CC_UTILIZATION_MEAN",
+        "CC_UTILIZATION_MAX":               "CC_UTILIZATION_MAX",
+        "CC_AMT_BALANCE_MEAN":              "CC_BALANCE_MEAN",
+        "CC_AMT_BALANCE_MAX":               "CC_BALANCE_MAX",
+        "CC_AMT_CREDIT_LIMIT_ACTUAL_MEAN":  "CC_CREDIT_LIMIT_MEAN",
+        "CC_AMT_PAYMENT_CURRENT_MEAN":      "CC_AMT_PAYMENT_MEAN",
+        "CC_AMT_INST_MIN_REGULARITY_MEAN":  "CC_MIN_PAYMENT_MEAN",
+        "CC_CNT_DRAWINGS_CURRENT_MEAN":     "CC_DRAWINGS_MEAN",
+        "CC_SK_DPD_MAX":                    "CC_SK_DPD_MAX",
+        "CC_SK_DPD_MEAN":                   "CC_SK_DPD_MEAN",
+        "CC_SK_DPD_DEF_MAX":                "CC_SK_DPD_DEF_MAX",
+    })
+
+    # -- Derived features ------------------------------------------------------
+    # How much more than the minimum does the client pay on average?
+    cc_agg["CC_PAYMENT_MIN_DIFF"] = (
+        cc_agg["CC_AMT_PAYMENT_MEAN"] - cc_agg["CC_MIN_PAYMENT_MEAN"]
+    )
+    # Binary: any delinquency?
+    cc_agg["CC_HAS_DPD"] = (cc_agg["CC_SK_DPD_MAX"] > 0).astype(np.int8)
+
+    n_features = len(cc_agg.columns) - 1
+    print(f"  Credit card aggregation: {n_features} features for {len(cc_agg):,} clients")
+
+    return cc_agg
+
+
+# ====================================================================
+# STEP 7 — POS_CASH_balance aggregations
+# ====================================================================
+
+def aggregate_pos_cash(pos: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate the POS_CASH_balance table to one row per SK_ID_CURR.
+
+    Why this matters:
+        POS (point-of-sale) and cash loans are tracked monthly here.
+        Each row is one month of one loan.  The key signal is whether
+        the client completed their loans on time or fell behind.
+        A pattern of early completion signals discipline; repeated
+        delinquency signals trouble.
+
+    Aggregated features (all prefixed POS_):
+        Delinquency:
+            - SK_DPD_MAX           : worst days past due
+            - SK_DPD_MEAN          : average days past due
+            - SK_DPD_DEF_MAX       : worst DPD (strict)
+            - HAS_DPD              : binary — any late month?
+        Loan progress:
+            - MONTH_COUNT          : total monthly records
+            - COMPLETED_COUNT      : how many loans reached "Completed" status
+            - ACTIVE_COUNT         : how many are still "Active"
+            - COMPLETED_RATIO      : completed / total distinct loans
+        Installment info:
+            - CNT_INSTALMENT_MEAN  : average total installment count
+            - CNT_INSTALMENT_FUTURE_MEAN : average remaining installments
+            - REMAINING_RATIO      : remaining / total installments
+
+    Parameters
+    ----------
+    pos : pd.DataFrame
+        Raw POS_CASH_balance table.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per SK_ID_CURR with aggregated features.
+    """
+    # -- GroupBy aggregation ---------------------------------------------------
+    agg_spec = {
+        "MONTHS_BALANCE":        ["count"],                   # total records
+        "SK_DPD":                ["max", "mean"],             # delinquency
+        "SK_DPD_DEF":            ["max"],                     # strict delinquency
+        "CNT_INSTALMENT":        ["mean"],                    # loan length
+        "CNT_INSTALMENT_FUTURE": ["mean"],                    # remaining payments
+    }
+
+    pos_agg = pos.groupby("SK_ID_CURR").agg(agg_spec)
+
+    # Flatten column names
+    pos_agg.columns = [
+        f"POS_{col}_{stat}".upper()
+        for col, stat in pos_agg.columns
+    ]
+    pos_agg = pos_agg.reset_index()
+
+    # Rename for readability
+    pos_agg = pos_agg.rename(columns={
+        "POS_MONTHS_BALANCE_COUNT":         "POS_MONTH_COUNT",
+        "POS_SK_DPD_MAX":                   "POS_SK_DPD_MAX",
+        "POS_SK_DPD_MEAN":                  "POS_SK_DPD_MEAN",
+        "POS_SK_DPD_DEF_MAX":               "POS_SK_DPD_DEF_MAX",
+        "POS_CNT_INSTALMENT_MEAN":          "POS_CNT_INSTALMENT_MEAN",
+        "POS_CNT_INSTALMENT_FUTURE_MEAN":   "POS_CNT_INSTALMENT_FUTURE_MEAN",
+    })
+
+    # -- Status counts (from NAME_CONTRACT_STATUS) -----------------------------
+    completed = (
+        pos.groupby("SK_ID_CURR")["NAME_CONTRACT_STATUS"]
+        .apply(lambda x: (x == "Completed").sum())
+        .rename("POS_COMPLETED_COUNT")
+    )
+    active = (
+        pos.groupby("SK_ID_CURR")["NAME_CONTRACT_STATUS"]
+        .apply(lambda x: (x == "Active").sum())
+        .rename("POS_ACTIVE_COUNT")
+    )
+
+    pos_agg = pos_agg.merge(completed, on="SK_ID_CURR", how="left")
+    pos_agg = pos_agg.merge(active,    on="SK_ID_CURR", how="left")
+
+    # -- Derived features ------------------------------------------------------
+    pos_agg["POS_HAS_DPD"] = (pos_agg["POS_SK_DPD_MAX"] > 0).astype(np.int8)
+
+    pos_agg["POS_COMPLETED_RATIO"] = (
+        pos_agg["POS_COMPLETED_COUNT"]
+        / pos_agg["POS_MONTH_COUNT"].clip(lower=1)
+    )
+
+    pos_agg["POS_REMAINING_RATIO"] = (
+        pos_agg["POS_CNT_INSTALMENT_FUTURE_MEAN"]
+        / pos_agg["POS_CNT_INSTALMENT_MEAN"].clip(lower=1)
+    )
+
+    n_features = len(pos_agg.columns) - 1
+    print(f"  POS_CASH aggregation: {n_features} features for {len(pos_agg):,} clients")
+
+    return pos_agg
