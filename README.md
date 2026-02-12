@@ -61,15 +61,18 @@ Ai_Credit_Risk/
 │   ├── feature_engineering.py         #   All FE functions (8 steps)
 │   └── build_features.py             #   Full pipeline orchestration script
 │
-├── data/                              # Engineered feature files (not tracked in git)
-│   ├── train_featured.parquet         #   307,511 x 212 (64.3 MB)
-│   └── test_featured.parquet          #   48,744 x 211  (11.6 MB)
+├── data/                              # Feature & processed files (not tracked in git)
+│   ├── train_featured.parquet         #   307,511 x 212 (64.3 MB) — after FE
+│   ├── test_featured.parquet          #   48,744 x 211  (11.6 MB) — after FE
+│   ├── train_processed.parquet        #   307,511 x 169 (54.7 MB) — after preprocessing
+│   └── test_processed.parquet         #   48,744 x 168  (10.1 MB) — after preprocessing
 │
 └── notebooks/                         # Jupyter analysis notebooks
     ├── 01_eda.ipynb                   #   EDA - pre-executed with all outputs
     ├── 01_EDA_PROJE_NOTLARI.txt       #   EDA project notes (Turkish)
     ├── 02_feature_engineering.ipynb    #   Feature engineering - pre-executed
     ├── 02_FE_PROJE_NOTLARI.txt        #   FE project notes (Turkish)
+    ├── 03_preprocessing.ipynb         #   Data preprocessing - pre-executed
     └── plots/                         #   Saved visualizations (not tracked in git)
 ```
 
@@ -121,16 +124,31 @@ Engineered **90 new features** from all 6 auxiliary tables, expanding the datase
 
 Pipeline runtime: ~5.4 minutes total.
 
+### 3. Data Preprocessing
+
+**Notebook:** `notebooks/03_preprocessing.ipynb`
+
+Cleaned and transformed the 212-column featured dataset into a model-ready 169-column dataset:
+
+| Step | Action | Details |
+|------|--------|---------|
+| Missing value drops | Dropped 40 columns | High-missing housing MODE/MEDI columns, weak CC features, categorical columns with >50% missing |
+| Missing flags | Added `_MISSING` indicator columns | `EXT_SOURCE_1`, housing AVG columns, `OWN_CAR_AGE` — preserves missingness as signal |
+| Imputation | Median (numeric) / Mode (categorical) | Train-derived medians applied to both train & test; count/flag NaNs filled with 0 |
+| Outlier handling | Winsorize %1-%99 | 113 columns clipped; FLAG_* columns excluded to preserve binary integrity |
+| Categorical encoding | Label (≤4 classes) + Frequency (>4) | 5 label-encoded (train-only fit, no leakage), 8 frequency-encoded with `_MISSING` flags |
+| Multicollinearity | Drop one of pairs with \|corr\| > 0.95 | 30 pairs found, 25 columns dropped (kept the one with higher target correlation) |
+
+**Preprocessing output** (212 → 169 columns, 0 missing, 0 inf, 0 categorical):
+
+| File | Rows | Columns | Size |
+|------|------|---------|------|
+| `data/train_processed.parquet` | 307,511 | 169 | 54.7 MB |
+| `data/test_processed.parquet` | 48,744 | 168 | 10.1 MB |
+
 ---
 
 ## Upcoming Steps
-
-### 3. Data Preprocessing
-- Drop >50% missing housing columns (41 columns)
-- Missing value imputation (median for numeric, mode for categorical)
-- Categorical encoding (Label Encoding / Target Encoding)
-- Multicollinearity check (remove >95% correlated pairs)
-- Outlier handling (log transform or winsorization)
 
 ### 4. Model Training
 - LightGBM and XGBoost baseline models
@@ -175,6 +193,17 @@ Pipeline runtime: ~5.4 minutes total.
 | Approval History | Clients with low past approval rates show higher default risk |
 | Bureau Balance | Monthly DPD severity (levels 1-5) adds temporal depth beyond bureau snapshot |
 
+### Preprocessing Findings
+
+| Finding | Detail |
+|---------|--------|
+| Column reduction | 212 → 169 columns (40 high-missing dropped, 25 multicollinear removed, missing flags added) |
+| FLAG integrity | 27 FLAG_* columns preserved as binary [0,1] — excluded from winsorization |
+| Outlier impact | Winsorization reduced highly skewed columns from 70 → 36 (17 excluding FLAGs) |
+| Zero-inflated features | 17 remaining skewed columns are DPD/overdue features — expected, tree-safe |
+| RATIO columns | All 14 ratio columns have non-negative min values after clipping |
+| Multicollinearity | Key drops: `AGE_YEARS` (duplicate of `DAYS_BIRTH`), `AMT_CREDIT` (≈`AMT_GOODS_PRICE`) |
+
 ---
 
 ## Setup & Installation
@@ -210,6 +239,7 @@ Notebooks ship pre-executed with all outputs embedded:
 ```bash
 jupyter notebook notebooks/01_eda.ipynb
 jupyter notebook notebooks/02_feature_engineering.ipynb
+jupyter notebook notebooks/03_preprocessing.ipynb
 ```
 
 ---
