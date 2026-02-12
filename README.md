@@ -65,18 +65,26 @@ Ai_Credit_Risk/
 │   ├── train_featured.parquet         #   307,511 x 212 (64.3 MB) — after FE
 │   ├── test_featured.parquet          #   48,744 x 211  (11.6 MB) — after FE
 │   ├── train_processed.parquet        #   307,511 x 169 (54.7 MB) — after preprocessing
-│   └── test_processed.parquet         #   48,744 x 168  (10.1 MB) — after preprocessing
+│   ├── test_processed.parquet         #   48,744 x 168  (10.1 MB) — after preprocessing
+│   ├── oof_predictions.parquet        #   307,511 x 3 — OOF predictions (after modeling)
+│   └── test_predictions.parquet       #   48,744 x 2 — test predictions (after modeling)
+│
+├── models/                            # Trained models & artifacts (not tracked in git)
+│   ├── lgbm_best_fold.pkl            #   Best single fold LightGBM model
+│   ├── lgbm_all_folds.pkl            #   All 5 fold models (ensemble)
+│   ├── best_params.json              #   Tuned hyperparameters + CV scores
+│   ├── shap_values.npy               #   SHAP values (5K sample)
+│   └── shap_sample.parquet           #   SHAP sample features
 │
 └── notebooks/                         # Jupyter analysis notebooks
     ├── 01_eda.ipynb                   #   EDA - pre-executed with all outputs
-    ├── 01_EDA_PROJE_NOTLARI.txt       #   EDA project notes (Turkish)
     ├── 02_feature_engineering.ipynb    #   Feature engineering - pre-executed
-    ├── 02_FE_PROJE_NOTLARI.txt        #   FE project notes (Turkish)
     ├── 03_preprocessing.ipynb         #   Data preprocessing - pre-executed
+    ├── 04_modeling.ipynb              #   Model training, tuning & SHAP analysis
     └── plots/                         #   Saved visualizations (not tracked in git)
 ```
 
-> **Note:** `docs/`, `data/`, and `notebooks/plots/` are excluded from git via `.gitignore`.
+> **Note:** `docs/`, `data/`, `models/`, and `notebooks/plots/` are excluded from git via `.gitignore`.
 > The dataset must be downloaded separately from Kaggle (see [Setup](#setup--installation)).
 > Notebooks are pre-executed — open them to view all outputs without re-running.
 
@@ -148,22 +156,39 @@ Cleaned and transformed the 212-column featured dataset into a model-ready 169-c
 
 ---
 
+### 4. Model Training & Explainability
+
+**Notebook:** `notebooks/04_modeling.ipynb`
+
+Full modeling pipeline with 7 steps:
+
+| Step | Action | Details |
+|------|--------|---------|
+| Baseline LightGBM | Stratified 5-Fold CV + `scale_pos_weight` | Default params, early stopping (100 rounds) |
+| Baseline XGBoost | Same CV setup, `tree_method='hist'` | Benchmark comparison |
+| Model Selection | AUC-ROC / PR-AUC comparison | Pick the best baseline for tuning |
+| Optuna Tuning | 50 trials, 9 hyperparameters | learning_rate, num_leaves, max_depth, regularization, sampling |
+| Imbalance Check | Threshold analysis on OOF predictions | Verify recall is acceptable with `scale_pos_weight` |
+| Final Model + CV | Tuned params, 5-fold ensemble | OOF predictions + averaged test predictions |
+| SHAP Analysis | Global summary + individual waterfall | 5K subsample, top-30 features, high/low risk examples |
+
+**Output files:**
+
+| File | Description |
+|------|-------------|
+| `models/lgbm_best_fold.pkl` | Best single fold model |
+| `models/lgbm_all_folds.pkl` | All 5 fold models (ensemble) |
+| `models/best_params.json` | Tuned hyperparameters + CV scores |
+| `data/oof_predictions.parquet` | OOF predictions (307,511 rows) |
+| `data/test_predictions.parquet` | Test predictions (48,744 rows) |
+
+---
+
 ## Upcoming Steps
 
-### 4. Model Training
-- LightGBM and XGBoost baseline models
-- Stratified K-Fold cross-validation
-- Hyperparameter tuning (Optuna)
-- Class imbalance handling (SMOTE / class_weight / scale_pos_weight)
-
-### 5. Model Evaluation & Explainability
-- AUC-ROC, Precision-Recall curves (not Accuracy — misleading with 1:11 imbalance)
-- SHAP values for feature importance and individual predictions
-- Calibration of probability scores to 0-100 risk scale
-
-### 6. Risk Scoring API
+### 5. Risk Scoring API
 - Dynamic risk score (0-100) for each customer
-- Top-3 contributing factors per prediction
+- Top-3 contributing factors per prediction (SHAP-based)
 - New transaction simulation endpoint
 
 ---
@@ -250,8 +275,9 @@ jupyter notebook notebooks/03_preprocessing.ipynb
 - **pandas / NumPy** — Data manipulation and analysis
 - **matplotlib / seaborn** — Data visualization
 - **scikit-learn** — Preprocessing and evaluation metrics
-- **LightGBM / XGBoost** — Gradient boosting models (upcoming)
-- **SHAP** — Model explainability (upcoming)
+- **LightGBM / XGBoost** — Gradient boosting models
+- **SHAP** — Model explainability
+- **Optuna** — Bayesian hyperparameter optimization
 
 ---
 
