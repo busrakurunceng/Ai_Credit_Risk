@@ -47,42 +47,43 @@ application_train/test (SK_ID_CURR)
 
 ```
 Ai_Credit_Risk/
-├── README.md                   # Project documentation
-├── requirements.txt            # Python dependencies
+├── README.md                          # Project documentation
+├── requirements.txt                   # Python dependencies
 ├── .gitignore
 │
-├── docs/                       # Research & raw data (not tracked in git)
-│   ├── AI Risk Analizi.docx    #   Pre-research report & requirements analysis
-│   └── dataset/                #   Raw CSV files from Kaggle
+├── docs/                              # Research & raw data (not tracked in git)
+│   ├── AI Risk Analizi.docx           #   Pre-research report
+│   └── dataset/                       #   Raw CSV files from Kaggle
 │
-├── src/                        # Reusable source modules
+├── src/                               # Reusable source modules
 │   ├── __init__.py
-│   └── utils.py                #   Memory optimization & data loading utilities
+│   ├── utils.py                       #   Memory optimization & data loading utilities
+│   ├── feature_engineering.py         #   All FE functions (8 steps)
+│   └── build_features.py             #   Full pipeline orchestration script
 │
-└── notebooks/                  # Jupyter analysis notebooks
-    ├── 01_eda.ipynb            #   EDA - pre-executed with all outputs & plots
-    └── plots/                  #   Saved visualizations (not tracked in git)
-        ├── target_distribution.png
-        ├── missing_values_train.png
-        ├── numeric_distributions.png
-        ├── age_analysis.png
-        ├── income_credit_analysis.png
-        ├── categorical_analysis.png
-        ├── correlation_analysis.png
-        ├── dpd_analysis.png
-        ├── cc_utilization.png
-        └── prev_app_analysis.png
+├── data/                              # Engineered feature files (not tracked in git)
+│   ├── train_featured.parquet         #   307,511 x 212 (64.3 MB)
+│   └── test_featured.parquet          #   48,744 x 211  (11.6 MB)
+│
+└── notebooks/                         # Jupyter analysis notebooks
+    ├── 01_eda.ipynb                   #   EDA - pre-executed with all outputs
+    ├── 01_EDA_PROJE_NOTLARI.txt       #   EDA project notes (Turkish)
+    ├── 02_feature_engineering.ipynb    #   Feature engineering - pre-executed
+    ├── 02_FE_PROJE_NOTLARI.txt        #   FE project notes (Turkish)
+    └── plots/                         #   Saved visualizations (not tracked in git)
 ```
 
-> **Note:** `docs/` and `notebooks/plots/` are excluded from git via `.gitignore`.
+> **Note:** `docs/`, `data/`, and `notebooks/plots/` are excluded from git via `.gitignore`.
 > The dataset must be downloaded separately from Kaggle (see [Setup](#setup--installation)).
-> The notebook `01_eda.ipynb` is pre-executed — open it to view all outputs and charts without re-running.
+> Notebooks are pre-executed — open them to view all outputs without re-running.
 
 ---
 
 ## Completed Steps
 
-### 1. Exploratory Data Analysis (EDA) — `notebooks/01_eda.ipynb`
+### 1. Exploratory Data Analysis (EDA)
+
+**Notebook:** `notebooks/01_eda.ipynb` | **Notes:** `notebooks/01_EDA_PROJE_NOTLARI.txt`
 
 Comprehensive analysis of all 8 tables using a 20% sample for fast iteration:
 
@@ -90,27 +91,46 @@ Comprehensive analysis of all 8 tables using a 20% sample for fast iteration:
 - **Target distribution**: Confirmed ~8% default rate with 1:11 class imbalance
 - **Missing value analysis**: 41 columns >50% missing (drop candidates), 9 at 20-50%, 16 at <20%
 - **Correlation analysis**: `EXT_SOURCE_1/2/3` are the strongest predictors (r = -0.16 to -0.17)
-- **Categorical insights**: Highest default rates in low-skill laborers (17%), renters (13.3%), lower secondary education (10.8%)
-- **Auxiliary table deep-dives**:
-  - `installments_payments` — 8.6% late payments; DPD is a strong default signal
-  - `credit_card_balance` — High utilization (>70%) -> 15.4% default vs. low (<30%) -> 6.0%
-  - `bureau` — Avg 5.5 external credits per client; 0.26% with overdue records
-  - `previous_application` — 62.7% approved, 17.4% refused
+- **Categorical insights**: Highest default rates in low-skill laborers (17%), renters (13.3%)
+- **Auxiliary table deep-dives**: DPD analysis, credit card utilization, bureau history, previous applications
+
+### 2. Feature Engineering
+
+**Notebook:** `notebooks/02_feature_engineering.ipynb` | **Notes:** `notebooks/02_FE_PROJE_NOTLARI.txt`  
+**Pipeline:** `src/build_features.py` | **Functions:** `src/feature_engineering.py`
+
+Engineered **90 new features** from all 6 auxiliary tables, expanding the dataset from 122 to 212 columns:
+
+| Step | Source | Features | Technique |
+|------|--------|----------|-----------|
+| 1 | Application table | 10 | Row-level ratios: credit/income, annuity/income, age, employment years |
+| 2 | DAYS_EMPLOYED cleanup | 1 | Anomaly detection: 365,243 sentinel replaced with median + flag |
+| 3 | Bureau | 16 | GroupBy aggregation: external credit counts, overdue history, debt ratio |
+| 4 | Previous application | 14 | GroupBy aggregation: approval rate, application amounts, decision timing |
+| 5 | Installments payments | 14 | DPD & payment difference: late ratio, underpaid ratio, fulfillment |
+| 6 | Credit card balance | 14 | Utilization ratio, DPD, payment vs minimum, drawing frequency |
+| 7 | POS_CASH balance | 11 | Loan completion ratio, DPD, remaining installments |
+| 8 | Bureau balance | 10 | Monthly DPD severity, status distribution (on-time/closed/unknown) |
+
+**Full pipeline output** (run on all data, not sampled):
+
+| File | Rows | Columns | Size |
+|------|------|---------|------|
+| `data/train_featured.parquet` | 307,511 | 212 | 64.3 MB |
+| `data/test_featured.parquet` | 48,744 | 211 | 11.6 MB |
+
+Pipeline runtime: ~5.4 minutes total.
 
 ---
 
 ## Upcoming Steps
 
-### 2. Feature Engineering
-- Aggregate features from auxiliary tables (mean/max/count per customer)
-- DPD statistics, payment discipline metrics, credit utilization ratios
-- Time-windowed features (last 3/6/12 months behavior)
-- Interaction features (credit-to-income ratio, annuity-to-income ratio)
-
 ### 3. Data Preprocessing
-- Missing value imputation strategy (threshold-based drop + median/mode fill)
+- Drop >50% missing housing columns (41 columns)
+- Missing value imputation (median for numeric, mode for categorical)
 - Categorical encoding (Label Encoding / Target Encoding)
-- Outlier handling
+- Multicollinearity check (remove >95% correlated pairs)
+- Outlier handling (log transform or winsorization)
 
 ### 4. Model Training
 - LightGBM and XGBoost baseline models
@@ -119,7 +139,7 @@ Comprehensive analysis of all 8 tables using a 20% sample for fast iteration:
 - Class imbalance handling (SMOTE / class_weight / scale_pos_weight)
 
 ### 5. Model Evaluation & Explainability
-- AUC-ROC, Precision-Recall curves
+- AUC-ROC, Precision-Recall curves (not Accuracy — misleading with 1:11 imbalance)
 - SHAP values for feature importance and individual predictions
 - Calibration of probability scores to 0-100 risk scale
 
@@ -127,11 +147,12 @@ Comprehensive analysis of all 8 tables using a 20% sample for fast iteration:
 - Dynamic risk score (0-100) for each customer
 - Top-3 contributing factors per prediction
 - New transaction simulation endpoint
-- Proactive alert system for sudden risk increases
 
 ---
 
-## Key EDA Findings
+## Key Findings
+
+### EDA Findings
 
 | Finding | Detail |
 |---------|--------|
@@ -139,11 +160,20 @@ Comprehensive analysis of all 8 tables using a 20% sample for fast iteration:
 | Strongest Predictors | `EXT_SOURCE_3` (r=-0.174), `EXT_SOURCE_2` (r=-0.167), `EXT_SOURCE_1` (r=-0.160) |
 | Age Effect | Younger clients (20-30) have highest default rates; risk decreases with age |
 | Employment Effect | Longer employment duration correlates with lower default risk |
-| Riskiest Occupation | Low-skill Laborers: 17.0% default rate |
-| Riskiest Housing | Rented apartment: 13.3% default rate |
 | Credit Card Utilization | >70% utilization -> 15.4% default vs. <30% -> 6.0% default |
 | Payment Delays (DPD) | 8.6% of installments are late; strong signal for default prediction |
 | Missing Values | 41 columns with >50% missing; careful imputation strategy needed |
+
+### Feature Engineering Findings
+
+| Finding | Detail |
+|---------|--------|
+| DAYS_EMPLOYED Anomaly | 18% of records had sentinel value 365,243 — cleaned with median + flag |
+| Bureau Coverage | 14.3% of clients have no external credit history (NaN filled as 0 credits) |
+| Credit Card Usage | Only 28.2% of clients have credit card records — sparse but informative |
+| Installment Behavior | Average 46 payment records per client — richest behavioral signal |
+| Approval History | Clients with low past approval rates show higher default risk |
+| Bureau Balance | Monthly DPD severity (levels 1-5) adds temporal depth beyond bureau snapshot |
 
 ---
 
@@ -166,19 +196,20 @@ pip install -r requirements.txt
 # https://www.kaggle.com/competitions/home-credit-default-risk/data
 ```
 
-### Viewing the EDA Notebook
+### Running the Feature Engineering Pipeline
 
-The notebook ships pre-executed with all outputs embedded. Simply open it:
+```bash
+# Build features on full data (saves to data/ directory, ~5 min)
+python -m src.build_features
+```
+
+### Viewing Notebooks
+
+Notebooks ship pre-executed with all outputs embedded:
 
 ```bash
 jupyter notebook notebooks/01_eda.ipynb
-```
-
-To re-run the analysis from scratch (takes ~5 min due to 2.56 GB dataset):
-
-```bash
-cd notebooks
-jupyter nbconvert --to notebook --execute 01_eda.ipynb --output 01_eda.ipynb
+jupyter notebook notebooks/02_feature_engineering.ipynb
 ```
 
 ---
@@ -189,8 +220,8 @@ jupyter nbconvert --to notebook --execute 01_eda.ipynb --output 01_eda.ipynb
 - **pandas / NumPy** — Data manipulation and analysis
 - **matplotlib / seaborn** — Data visualization
 - **scikit-learn** — Preprocessing and evaluation metrics
-- **LightGBM / XGBoost** — Gradient boosting models
-- **SHAP** — Model explainability
+- **LightGBM / XGBoost** — Gradient boosting models (upcoming)
+- **SHAP** — Model explainability (upcoming)
 
 ---
 
