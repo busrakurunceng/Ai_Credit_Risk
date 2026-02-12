@@ -677,3 +677,124 @@ def aggregate_pos_cash(pos: pd.DataFrame) -> pd.DataFrame:
     print(f"  POS_CASH aggregation: {n_features} features for {len(pos_agg):,} clients")
 
     return pos_agg
+
+
+# ====================================================================
+# STEP 8 — Bureau balance aggregations
+# ====================================================================
+
+def aggregate_bureau_balance(bb: pd.DataFrame, bureau: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate the bureau_balance table to one row per SK_ID_CURR.
+
+    Why this matters:
+        The bureau table (Step 3) gave us a snapshot of each external
+        credit — total amounts, whether it's active, overdue days at
+        the time of the snapshot.  But bureau_balance gives the full
+        **monthly history** of each credit's repayment status.
+
+        This is like the difference between a photo and a video:
+        Step 3 told us "this client has 5 credits, 2 are overdue."
+        Step 8 tells us "across all months of all credits, this client
+        was late 23% of the time and hit 120+ DPD severity twice."
+
+    Special challenge:
+        bureau_balance does NOT have SK_ID_CURR.  It has SK_ID_BUREAU.
+        We must join through the bureau table:
+            bureau_balance.SK_ID_BUREAU → bureau.SK_ID_BUREAU → SK_ID_CURR
+
+    STATUS encoding (from Home Credit docs):
+        C  = closed (this month the credit was already closed)
+        0  = no DPD (paid on time)
+        X  = unknown / no information
+        1  = DPD 1-30 days
+        2  = DPD 31-60 days
+        3  = DPD 61-90 days
+        4  = DPD 91-120 days
+        5  = DPD 120+ days or written off
+
+    Aggregated features (all prefixed BB_):
+        DPD severity:
+            - DPD_STATUS_MEAN     : mean numeric DPD status (0-5, higher=worse)
+            - DPD_STATUS_MAX      : worst DPD severity ever reached
+        DPD frequency:
+            - DPD_ANY_COUNT       : months with any DPD (status 1-5)
+            - DPD_ANY_RATIO       : proportion of months with any DPD
+            - DPD_SEVERE_COUNT    : months with DPD 60+ days (status 3-5)
+            - DPD_SEVERE_RATIO    : proportion of months with severe DPD
+        Status distribution:
+            - STATUS_0_RATIO      : proportion of "on time" months
+            - STATUS_C_RATIO      : proportion of "closed" months
+            - STATUS_X_RATIO      : proportion of "unknown" months
+        Volume:
+            - MONTH_COUNT         : total monthly records across all credits
+
+    Parameters
+    ----------
+    bb : pd.DataFrame
+        Raw bureau_balance table (SK_ID_BUREAU, MONTHS_BALANCE, STATUS).
+    bureau : pd.DataFrame
+        Bureau table (needed for SK_ID_BUREAU → SK_ID_CURR mapping).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per SK_ID_CURR with aggregated features.
+    """
+    # -- Map SK_ID_BUREAU → SK_ID_CURR via bureau table ------------------------
+    bureau_key = bureau[["SK_ID_BUREAU", "SK_ID_CURR"]].drop_duplicates()
+    bb = bb.merge(bureau_key, on="SK_ID_BUREAU", how="inner")
+    print(f"  Bureau balance after join: {len(bb):,} rows with SK_ID_CURR")
+
+    # -- Convert STATUS to numeric DPD level -----------------------------------
+    # C, X, 0 → 0 (no active DPD);  1-5 → 1-5 (DPD severity)
+    status_map = {"C": 0, "X": 0, "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5}
+    bb["DPD_LEVEL"] = bb["STATUS"].map(status_map).fillna(0).astype(np.int8)
+
+    # Binary flags per row
+    bb["IS_DPD_ANY"] = (bb["DPD_LEVEL"] > 0).astype(np.int8)          # any DPD
+    bb["IS_DPD_SEVERE"] = (bb["DPD_LEVEL"] >= 3).astype(np.int8)      # 60+ days
+
+    # Status category flags per row
+    bb["IS_STATUS_0"] = (bb["STATUS"] == "0").astype(np.int8)
+    bb["IS_STATUS_C"] = (bb["STATUS"] == "C").astype(np.int8)
+    bb["IS_STATUS_X"] = (bb["STATUS"] == "X").astype(np.int8)
+
+    # -- GroupBy aggregation ---------------------------------------------------
+    agg_spec = {
+        "MONTHS_BALANCE":  ["count"],                   # total months
+        "DPD_LEVEL":       ["mean", "max"],             # DPD severity
+        "IS_DPD_ANY":      ["sum", "mean"],             # any-DPD count & ratio
+        "IS_DPD_SEVERE":   ["sum", "mean"],             # severe-DPD count & ratio
+        "IS_STATUS_0":     ["mean"],                    # on-time ratio
+        "IS_STATUS_C":     ["mean"],                    # closed ratio
+        "IS_STATUS_X":     ["mean"],                    # unknown ratio
+    }
+
+    bb_agg = bb.groupby("SK_ID_CURR").agg(agg_spec)
+
+    # Flatten column names
+    bb_agg.columns = [
+        f"BB_{col}_{stat}".upper()
+        for col, stat in bb_agg.columns
+    ]
+    bb_agg = bb_agg.reset_index()
+
+    # Rename for readability
+    bb_agg = bb_agg.rename(columns={
+        "BB_MONTHS_BALANCE_COUNT":   "BB_MONTH_COUNT",
+        "BB_DPD_LEVEL_MEAN":         "BB_DPD_STATUS_MEAN",
+        "BB_DPD_LEVEL_MAX":          "BB_DPD_STATUS_MAX",
+        "BB_IS_DPD_ANY_SUM":         "BB_DPD_ANY_COUNT",
+        "BB_IS_DPD_ANY_MEAN":        "BB_DPD_ANY_RATIO",
+        "BB_IS_DPD_SEVERE_SUM":      "BB_DPD_SEVERE_COUNT",
+        "BB_IS_DPD_SEVERE_MEAN":     "BB_DPD_SEVERE_RATIO",
+        "BB_IS_STATUS_0_MEAN":       "BB_STATUS_0_RATIO",
+        "BB_IS_STATUS_C_MEAN":       "BB_STATUS_C_RATIO",
+        "BB_IS_STATUS_X_MEAN":       "BB_STATUS_X_RATIO",
+    })
+
+    n_features = len(bb_agg.columns) - 1
+    print(f"  Bureau balance aggregation: {n_features} features for {len(bb_agg):,} clients")
+
+    return bb_agg
