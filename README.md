@@ -66,13 +66,18 @@ Ai_Credit_Risk/
 │   ├── test_featured.parquet          #   48,744 x 211  (11.6 MB) — after FE
 │   ├── train_processed.parquet        #   307,511 x 169 (54.7 MB) — after preprocessing
 │   ├── test_processed.parquet         #   48,744 x 168  (10.1 MB) — after preprocessing
-│   ├── oof_predictions.parquet        #   307,511 x 3 — OOF predictions (after modeling)
-│   └── test_predictions.parquet       #   48,744 x 2 — test predictions (after modeling)
+│   ├── oof_predictions.parquet        #   307,511 x 3 — Raw OOF predictions
+│   ├── test_predictions.parquet       #   48,744 x 2 — Raw test ensemble predictions
+│   ├── test_predictions_full.parquet  #   48,744 x 2 — Raw full-model test predictions
+│   ├── oof_predictions_calibrated.parquet  #  Calibrated OOF (raw + Platt-scaled)
+│   └── test_predictions_calibrated.parquet #  Calibrated test (ensemble + full, raw + scaled)
 │
 ├── models/                            # Trained models & artifacts (not tracked in git)
 │   ├── lgbm_best_fold.pkl            #   Best single fold LightGBM model
 │   ├── lgbm_all_folds.pkl            #   All 5 fold models (ensemble)
-│   ├── best_params.json              #   Tuned hyperparameters + CV scores
+│   ├── lgbm_full_model.pkl           #   Full-data single model (production)
+│   ├── platt_calibrator.pkl          #   Platt scaling for probability calibration
+│   ├── best_params.json              #   Tuned hyperparameters + CV scores + thresholds
 │   ├── shap_values.npy               #   SHAP values (5K sample)
 │   └── shap_sample.parquet           #   SHAP sample features
 │
@@ -80,7 +85,7 @@ Ai_Credit_Risk/
     ├── 01_eda.ipynb                   #   EDA - pre-executed with all outputs
     ├── 02_feature_engineering.ipynb    #   Feature engineering - pre-executed
     ├── 03_preprocessing.ipynb         #   Data preprocessing - pre-executed
-    ├── 04_modeling.ipynb              #   Model training, tuning & SHAP analysis
+    ├── 04_modeling.ipynb              #   Model training, tuning, calibration & SHAP
     └── plots/                         #   Saved visualizations (not tracked in git)
 ```
 
@@ -156,40 +161,62 @@ Cleaned and transformed the 212-column featured dataset into a model-ready 169-c
 
 ---
 
-### 4. Model Training & Explainability
+### 4. Model Training, Calibration & Explainability
 
 **Notebook:** `notebooks/04_modeling.ipynb`
 
-Full modeling pipeline with 7 steps:
+Full modeling pipeline with 12 steps:
 
 | Step | Action | Details |
 |------|--------|---------|
-| Baseline LightGBM | Stratified 5-Fold CV + `scale_pos_weight` | Default params, early stopping (100 rounds) |
-| Baseline XGBoost | Same CV setup, `tree_method='hist'` | Benchmark comparison |
-| Model Selection | AUC-ROC / PR-AUC comparison | Pick the best baseline for tuning |
-| Optuna Tuning | 50 trials, 9 hyperparameters | learning_rate, num_leaves, max_depth, regularization, sampling |
-| Imbalance Check | Threshold analysis on OOF predictions | Verify recall is acceptable with `scale_pos_weight` |
-| Final Model + CV | Tuned params, 5-fold ensemble | OOF predictions + averaged test predictions |
-| SHAP Analysis | Global summary + individual waterfall | 5K subsample, top-30 features, high/low risk examples |
+| Baseline LightGBM | Stratified 5-Fold CV + `scale_pos_weight=11.39` | AUC=0.7842, PR-AUC=0.2753 |
+| Baseline XGBoost | Same CV setup, `tree_method='hist'` | AUC=0.7814, PR-AUC=0.2727 |
+| Model Selection | AUC/PR-AUC comparison | **LightGBM selected** (higher AUC, faster) |
+| Optuna AUC Tuning | 50 trials × 5-fold, 9 hyperparameters | Best AUC=0.7872 (+30 bps) |
+| Optuna PR-AUC Tuning | 50 trials × 5-fold, `average_precision` objective | Best PR-AUC=0.2796 (+44 bps) |
+| Study Comparison | AUC vs PR-AUC optimized params | **PR-AUC-optimized selected** (AUC loss only -1.7 bps) |
+| Leakage & Stability | Correlation, dominance, fold variance checks | No leakage, stable folds (CV<0.5) |
+| Final Model | PR-AUC-aligned early stopping + full-data model | **AUC=0.7868, PR-AUC=0.2802, +26 bps** |
+| Calibration | Brier score, reliability diagram, Platt scaling | Brier Skill: -1.26 → **+0.11** |
+| Threshold Optimization | Business cost matrix (FN:10×, FP:1×) on calibrated OOF | Cost-optimal: **0.090** (Recall 68%) |
+| SHAP Analysis | Global summary + individual waterfalls | Top: EXT_SOURCE_2/3, CREDIT_TERM, GOODS_CREDIT_DIFF |
+| Export | 12 artifact files | Models, predictions, calibrated outputs, SHAP values |
 
-**Output files:**
+**Key results:**
+
+| Metric | Baseline | Tuned | Improvement |
+|--------|----------|-------|-------------|
+| CV AUC | 0.78422 | 0.78682 | +26.0 bps |
+| CV PR-AUC | 0.27528 | 0.28015 | +48.7 bps |
+| Brier Score | 0.168 (raw) | 0.066 (calibrated) | -60.7% |
+| Brier Skill | -1.264 | +0.109 | Business-ready |
+
+**Output files (12 artifacts):**
 
 | File | Description |
 |------|-------------|
 | `models/lgbm_best_fold.pkl` | Best single fold model |
 | `models/lgbm_all_folds.pkl` | All 5 fold models (ensemble) |
-| `models/best_params.json` | Tuned hyperparameters + CV scores |
-| `data/oof_predictions.parquet` | OOF predictions (307,511 rows) |
-| `data/test_predictions.parquet` | Test predictions (48,744 rows) |
+| `models/lgbm_full_model.pkl` | Full-data single model (production) |
+| `models/platt_calibrator.pkl` | Platt scaling for probability calibration |
+| `models/best_params.json` | Hyperparameters + all metrics + thresholds |
+| `models/shap_values.npy` | SHAP values (5K samples) |
+| `data/oof_predictions.parquet` | Raw OOF predictions (307,511 rows) |
+| `data/test_predictions.parquet` | Raw test ensemble (48,744 rows) |
+| `data/test_predictions_full.parquet` | Raw full-model test predictions |
+| `data/oof_predictions_calibrated.parquet` | Calibrated OOF predictions |
+| `data/test_predictions_calibrated.parquet` | Calibrated test (ensemble + full model) |
 
 ---
 
 ## Upcoming Steps
 
 ### 5. Risk Scoring API
-- Dynamic risk score (0-100) for each customer
-- Top-3 contributing factors per prediction (SHAP-based)
-- New transaction simulation endpoint
+- FastAPI REST API with `/predict`, `/explain`, `/simulate` endpoints
+- Dynamic risk score (0-100): raw prediction → Platt calibration → score
+- Top-3 contributing factors per prediction (SHAP-based explainability)
+- Business threshold integration (cost-optimal: 0.090, F1-optimal: 0.178)
+- Fairness analysis for `CODE_GENDER` (top-5 SHAP feature, sensitive attribute)
 
 ---
 
@@ -229,6 +256,19 @@ Full modeling pipeline with 7 steps:
 | RATIO columns | All 14 ratio columns have non-negative min values after clipping |
 | Multicollinearity | Key drops: `AGE_YEARS` (duplicate of `DAYS_BIRTH`), `AMT_CREDIT` (≈`AMT_GOODS_PRICE`) |
 
+### Modeling Findings
+
+| Finding | Detail |
+|---------|--------|
+| LightGBM > XGBoost | LightGBM wins both AUC (+28 bps) and PR-AUC (+26 bps), and runs 1.6× faster |
+| Dual Optuna strategy | AUC-optimized → shallow trees (depth=4); PR-AUC-optimized → deep trees (depth=8) with stronger regularization |
+| No leakage detected | Max feature-target correlation: 0.16 (EXT_SOURCE_2); no dominant feature (top-1 = 4.6%) |
+| Calibration critical | `scale_pos_weight` inflates probabilities 5-8×; Platt scaling fixes Brier Skill from -1.26 to +0.11 |
+| SHAP top features | EXT_SOURCE_2/3 (\|SHAP\|=0.31/0.28), GOODS_CREDIT_DIFF (0.13), CODE_GENDER (0.12), CREDIT_TERM (0.11) |
+| Threshold sensitivity | Cost-optimal (FN:10×) = 0.090 catches 68% defaults; F1-optimal = 0.178 balances precision/recall |
+| Full model correlation | Ensemble vs full-data single model: r=0.994 — nearly identical rankings |
+| Fairness concern | `CODE_GENDER` in SHAP top-5 — requires fairness audit before production deployment |
+
 ---
 
 ## Setup & Installation
@@ -265,6 +305,7 @@ Notebooks ship pre-executed with all outputs embedded:
 jupyter notebook notebooks/01_eda.ipynb
 jupyter notebook notebooks/02_feature_engineering.ipynb
 jupyter notebook notebooks/03_preprocessing.ipynb
+jupyter notebook notebooks/04_modeling.ipynb
 ```
 
 ---
