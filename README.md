@@ -50,6 +50,7 @@ Ai_Credit_Risk/
 ├── README.md                          # Project documentation
 ├── requirements.txt                   # Python dependencies
 ├── .gitignore
+├── app.py                             # Streamlit dashboard (risk scoring UI)
 │
 ├── docs/                              # Research & raw data (not tracked in git)
 │   ├── AI Risk Analizi.docx           #   Pre-research report
@@ -209,10 +210,36 @@ Full modeling pipeline with 12 steps:
 
 ---
 
+### 5. Streamlit Dashboard
+
+**App:** `app.py`
+
+Interactive credit risk analysis dashboard built with Streamlit and Plotly, featuring a corporate finance theme with Turkish-language UI. Currently runs with mock data — ready for backend model integration.
+
+| Component | Description |
+|-----------|-------------|
+| **Sidebar** | Customer profile selector (3 mock profiles), JSON file upload for custom data, project info |
+| **KPI Panel** | 4 metric cards: Credit Amount, Annual Income, Current Debt, External Credit Score |
+| **Risk Gauge** | Plotly gauge chart (0-100 scale) with color-coded zones: Green (≤30), Orange (31-60), Red (61-100) |
+| **Simulation Panel** | Interactive scenario analysis — adjustable income, credit amount, credit term, employment years, late payment ratio with real-time risk recalculation |
+| **SHAP Analysis** | Horizontal bar chart showing top feature contributions (red = risk increase, green = risk decrease) |
+| **Payment History** | 12-month DPD (Days Past Due) timeline with color-coded markers |
+
+**Mock customer profiles:**
+
+| Profile | Risk Score | Risk Level |
+|---------|-----------|------------|
+| Customer #10234 | 18 | Low Risk (Green) |
+| Customer #20567 | 47 | Medium Risk (Orange) |
+| Customer #35891 | 82 | High Risk (Red) |
+
+---
+
 ## Upcoming Steps
 
-### 5. Risk Scoring API
+### 6. Backend API Integration
 - FastAPI REST API with `/predict`, `/explain`, `/simulate` endpoints
+- Replace mock data with real model inference (LightGBM + Platt calibration)
 - Dynamic risk score (0-100): raw prediction → Platt calibration → score
 - Top-3 contributing factors per prediction (SHAP-based explainability)
 - Business threshold integration (cost-optimal: 0.090, F1-optimal: 0.178)
@@ -290,6 +317,13 @@ pip install -r requirements.txt
 # https://www.kaggle.com/competitions/home-credit-default-risk/data
 ```
 
+### Running the Streamlit Dashboard
+
+```bash
+# Launch the interactive credit risk dashboard (opens in browser)
+streamlit run app.py
+```
+
 ### Running the Feature Engineering Pipeline
 
 ```bash
@@ -315,6 +349,8 @@ jupyter notebook notebooks/04_modeling.ipynb
 - **Python 3.11+**
 - **pandas / NumPy** — Data manipulation and analysis
 - **matplotlib / seaborn** — Data visualization
+- **Streamlit** — Interactive web dashboard
+- **Plotly** — Interactive gauge & chart visualizations
 - **scikit-learn** — Preprocessing and evaluation metrics
 - **LightGBM / XGBoost** — Gradient boosting models
 - **SHAP** — Model explainability
@@ -328,3 +364,5 @@ jupyter notebook notebooks/04_modeling.ipynb
 - [LightGBM Documentation](https://lightgbm.readthedocs.io/)
 - [XGBoost Documentation](https://xgboost.readthedocs.io/)
 - [SHAP Documentation](https://shap.readthedocs.io/)
+- [Streamlit Documentation](https://docs.streamlit.io/)
+- [Plotly Documentation](https://plotly.com/python/)
